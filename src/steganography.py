@@ -93,7 +93,7 @@ def embed_message_in_channel(
 
 def extract_message_from_channel(
     freqs_blocks: List[List[List[float]]]
-) -> Tuple[bytearray, bytearray]:
+) -> Tuple[bytearray, bytearray, int]:
 
     total_blocks = len(freqs_blocks)
 
@@ -119,7 +119,36 @@ def extract_message_from_channel(
     message_bits = message_bits[: (len(message_bits) // 8) * 8]
     encrypted_bytes = bits_to_bytearray(message_bits)
 
-    return encrypted_bytes, key_bytes
+    return encrypted_bytes, key_bytes, offset
+
+
+def decode_message_from_image(
+    image_path: str,
+    channel: str = "Cr"
+) -> Tuple[str, str, int]:
+    """
+    Carga una imagen (BGR con OpenCV), la convierte a YCrCb, calcula las
+    convoluciones (DCT) por bloques de 8x8 sobre el canal indicado
+    ('Cr' o 'Cb'), extrae de la posición [EMBED_ROW][EMBED_COL] de cada
+    bloque el offset (en los últimos OFFSET_BITS bloques), la clave
+    (guardada en bits invertidos justo antes del offset) y el mensaje
+    cifrado (a partir del offset). Desencripta con XOR usando la clave
+    recuperada y devuelve (mensaje, clave, offset).
+    """
+    if channel not in ("Cr", "Cb"):
+        raise ValueError("channel debe ser 'Cr' o 'Cb'")
+
+    ycrcb, Y, Cr, Cb = load_and_split(image_path)
+    canal = Cr if channel == "Cr" else Cb
+
+    canal_pad = pad_to_multiple_of_8(canal)
+    blocks = extract_all_blocks(canal_pad)
+    freqs = [to_frequencies(b) for b in blocks]
+
+    encrypted_bytes, key_bytes, offset = extract_message_from_channel(freqs)
+    mensaje, clave = xor_decryption(encrypted_bytes, key_bytes)
+
+    return mensaje, clave, offset
 
 
 
@@ -192,14 +221,8 @@ if __name__ == "__main__":
     )
 
     # Extraer y desencriptar
-    ycrcb, Y, Cr, Cb = load_and_split("foto_con_mensaje.jpeg")
-    h, w = Cr.shape
-    Cr_pad = pad_to_multiple_of_8(Cr)
-    Cr_blocks = extract_all_blocks(Cr_pad)
-    Cr_freqs  = [to_frequencies(b) for b in Cr_blocks]
-
-    encrypted_bytes, key_bytes = extract_message_from_channel(Cr_freqs)
-    mensaje, clave = xor_decryption(encrypted_bytes, key_bytes)
+    mensaje, clave, offset = decode_message_from_image("foto_con_mensaje.jpeg", channel="Cr")
 
     print(f"Mensaje recuperado: {mensaje}")
     print(f"Clave recuperada:   {clave}")
+    print(f"Offset usado:       {offset}")
