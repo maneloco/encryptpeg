@@ -1,4 +1,5 @@
 from typing import List, Tuple
+import random
 import numpy as np
 from convert import load_and_split, pad_to_multiple_of_8, process_channel, merge_and_save, iter_blocks_8x8
 from dct import to_frequencies, from_frequencies
@@ -30,36 +31,84 @@ def bits_to_bytearray(bits: List[int]) -> bytearray:
     return result
 
 
-def embed_bit(coef: float, bit: int) -> float:
-    val = int(round(coef))
-    if val % 2 != bit:
-        val += 1 if bit == 1 else -1
+# Paso de cuantización: cuanto más grande, más "sobrevive" el bit al
+# redondeo de píxeles a uint8 y a la recompresión JPEG, a costa de más
+# distorsión visual en el canal de crominancia. Con step=1 (par/impar)
+# el bit se pierde en ~1 de cada 3 casos solo por redondear a uint8;
+# con step=8 sobrevive de forma fiable en pruebas.
+QUANT_STEP = 32
+
+def embed_bit(coef: float, bit: int, step: int = QUANT_STEP) -> float:
+    val = int(round(coef / step)) * step
+    if (val // step) % 2 != bit:
+        val += step if bit == 1 else -step
     if val == 0:
-        val = 1 if bit == 1 else 2
+        val = step if bit == 1 else 2 * step
     return float(val)
 
-def extract_bit(coef: float) -> int:
-    return abs(int(round(coef))) % 2
+def extract_bit(coef: float, step: int = QUANT_STEP) -> int:
+    return abs(int(round(coef / step))) % 2
+
+
+def resolve_offset(key_bytes: bytearray, offset: int = None) -> int:
+    """
+    Calcula el offset final (en bits) que se usará para reservar espacio a
+    la clave. El offset SIEMPRE tiene que ser un múltiplo del tamaño natural
+    de la clave en bits (8 * nº de caracteres), porque para llenar ese
+    espacio se repite la clave completa las veces que hagan falta -nunca
+    bits sueltos- y así el XOR cíclico sigue desencriptando correctamente.
+
+    - Si offset es None: se elige aleatoriamente un nº de repeticiones
+      válido (entre 1 y el máximo que quepa en 256 bits).
+    - Si offset se especifica (0-256): se redondea hacia arriba al múltiplo
+      del tamaño de la clave más cercano que sea >= offset.
+    """
+    natural_offset = 8 * len(key_bytes)
+    if natural_offset == 0:
+        raise ValueError("La clave no puede estar vacía.")
+
+    if offset is None:
+        max_repeats = max(1, 256 // natural_offset)
+        repeats = random.randint(1, max_repeats)
+    else:
+        if not (0 <= offset <= 256):
+            raise ValueError("El offset debe estar entre 0 y 256.")
+        repeats = max(1, -(-offset // natural_offset))  # ceil division
+
+    return natural_offset * repeats
 
 
 def embed_message_in_channel(
     freqs_blocks: List[List[List[float]]],
     encrypted_bytes: bytearray,
-    key_bytes: bytearray
+    key_bytes: bytearray,
+    offset: int
 ) -> List[List[List[float]]]:
-
+    """
+    offset: nº de bits reservados para la clave, ya resuelto con
+    resolve_offset(). Debe ser múltiplo de 8 * len(key_bytes).
+    """
     total_blocks = len(freqs_blocks)
 
     key_bits      = bytearray_to_bits(key_bytes)
     message_bits  = bytearray_to_bits(encrypted_bytes)
-    key_bits_rev  = key_bits[::-1]
+    natural_offset = len(key_bits)
 
-    offset        = len(key_bits_rev)
+    if offset % natural_offset != 0:
+        raise ValueError(
+            f"offset ({offset}) debe ser múltiplo del tamaño de la clave "
+            f"en bits ({natural_offset}). Usa resolve_offset() para calcularlo."
+        )
     if offset > (1 << OFFSET_BITS) - 1:
         raise ValueError(
-            f"La clave es demasiado larga: offset={offset} bits, "
-            f"máximo representable con {OFFSET_BITS} bits es {(1 << OFFSET_BITS) - 1}."
+            f"offset={offset} supera el máximo representable con "
+            f"{OFFSET_BITS} bits ({(1 << OFFSET_BITS) - 1})."
         )
+
+    repeats       = offset // natural_offset
+    key_bits_full = key_bits * repeats       # repite la clave ENTERA, nunca bits sueltos
+    key_bits_rev  = key_bits_full[::-1]
+
     offset_bits   = [(offset >> (OFFSET_BITS - 1 - i)) & 1 for i in range(OFFSET_BITS)]
 
     bloques_necesarios = offset + len(message_bits) + OFFSET_BITS
@@ -147,6 +196,7 @@ def decode_message_from_image(
 
     encrypted_bytes, key_bytes, offset = extract_message_from_channel(freqs)
     mensaje, clave = xor_decryption(encrypted_bytes, key_bytes)
+    mensaje = mensaje.split('\0')[0]
 
     return mensaje, clave, offset
 
@@ -157,8 +207,17 @@ def save_image_with_message(
     image_path: str,
     message: str,
     key: str,
-    output_path: str
-):
+    output_path: str,
+    offset: int = None
+) -> int:
+    """
+    offset: nº de bits deseados para reservar a la clave (0-256). Si es
+    None, se elige uno aleatorio válido. Se resuelve una única vez y se usa
+    igual en los canales Cr y Cb para que ambos queden coherentes.
+
+    Devuelve el offset final realmente usado (puede diferir ligeramente del
+    solicitado: se redondea hacia arriba al múltiplo del tamaño de la clave).
+    """
     from encrypt import xor_encryption
 
     ycrcb, Y, Cr, Cb = load_and_split(image_path)
@@ -168,18 +227,19 @@ def save_image_with_message(
     Cr_pad = pad_to_multiple_of_8(Cr)
     Cb_pad = pad_to_multiple_of_8(Cb)
 
-    encrypted_bytes, key_bytes = xor_encryption(message, key)
+    encrypted_bytes, key_bytes = xor_encryption(message + '\0', key)
+    used_offset = resolve_offset(key_bytes, offset)
 
     Y_out = process_channel(Y_pad, lambda b: from_frequencies(to_frequencies(b)))
 
     Cr_blocks = extract_all_blocks(Cr_pad)
     Cr_freqs  = [to_frequencies(b) for b in Cr_blocks]
-    Cr_freqs  = embed_message_in_channel(Cr_freqs, encrypted_bytes, key_bytes)
+    Cr_freqs  = embed_message_in_channel(Cr_freqs, encrypted_bytes, key_bytes, used_offset)
     Cr_out    = reconstruct_channel(Cr_freqs, Cr_pad.shape)
 
     Cb_blocks = extract_all_blocks(Cb_pad)
     Cb_freqs  = [to_frequencies(b) for b in Cb_blocks]
-    Cb_freqs  = embed_message_in_channel(Cb_freqs, encrypted_bytes, key_bytes)
+    Cb_freqs  = embed_message_in_channel(Cb_freqs, encrypted_bytes, key_bytes, used_offset)
     Cb_out    = reconstruct_channel(Cb_freqs, Cb_pad.shape)
 
     Y_out  = Y_out[:h_orig, :w_orig]
@@ -187,7 +247,9 @@ def save_image_with_message(
     Cb_out = Cb_out[:h_orig, :w_orig]
 
     merge_and_save(Y_out, Cr_out, Cb_out, output_path)
-    print(f"Imagen guardada en {output_path}")
+    print(f"Imagen guardada en {output_path} (offset usado: {used_offset})")
+
+    return used_offset
 
 
 def extract_all_blocks(channel: np.ndarray) -> List[List[List[float]]]:
@@ -212,12 +274,13 @@ def reconstruct_channel(
     return np.clip(result, 0, 255).astype(np.uint8)
 
 if __name__ == "__main__":
-    # Guardar
+    # Guardar (offset=None -> se elige uno aleatorio válido)
     save_image_with_message(
         image_path="foto.jpeg",
         message="Oh...Estás haciendo magea",
         key="clave",
-        output_path="foto_con_mensaje.jpeg"
+        output_path="foto_con_mensaje.jpeg",
+        offset=None
     )
 
     # Extraer y desencriptar
