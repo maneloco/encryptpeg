@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""
+encryptpeg - Oculta o extrae mensajes cifrados (XOR) en imágenes JPEG,
+usando esteganografía sobre los coeficientes DCT de los canales Cr/Cb.
+
+Uso:
+    python3 ./encryptpeg --encrypt "{clave}" --message "{mensaje}" [--offset N] [--output salida.jpg] imagen.jpg
+    python3 ./encryptpeg --decrypt imagen.jpg
+"""
+
+import argparse
+import os
+import sys
+
+import cv2
+
+from steganography import save_image_with_message, decode_message_from_image
+from export import verify_saved_image
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="encryptpeg",
+        description=(
+            "Oculta o extrae mensajes cifrados en imágenes JPEG usando "
+            "esteganografía sobre los coeficientes DCT."
+        ),
+    )
+    parser.add_argument(
+        "-e", "--encrypt", metavar="CLAVE",
+        help="Clave para encriptar el mensaje (activa el modo encriptar)."
+    )
+    parser.add_argument(
+        "-m", "--message", metavar="MENSAJE",
+        help="Mensaje a ocultar en la imagen. Requerido junto con --encrypt."
+    )
+    parser.add_argument(
+        "--offset", type=int, default=None, metavar="N",
+        help=(
+            "Bits reservados para la clave (0-256). Opcional: si no se "
+            "indica, se elige uno aleatorio válido."
+        )
+    )
+    parser.add_argument(
+        "--output", metavar="ARCHIVO", default=None,
+        help="Nombre de la imagen ya comprimida y encriptada. Por defecto: salida_encriptada.jpg"
+    )
+    parser.add_argument(
+        "-d", "--decrypt", metavar="IMAGEN",
+        help="Imagen de la que extraer y desencriptar el mensaje."
+    )
+    parser.add_argument(
+        "image", nargs="?",
+        help="Imagen base de entrada (obligatoria en modo --encrypt)."
+    )
+    return parser
+
+
+def ensure_jpg_extension(path: str) -> str:
+    base, ext = os.path.splitext(path)
+    if ext.lower() not in (".jpg", ".jpeg"):
+        return base + ".jpg"
+    return path
+
+
+def run_encrypt(args: argparse.Namespace) -> int:
+    if not args.message:
+        print("Error: --encrypt requiere --message/-m con el texto a ocultar.", file=sys.stderr)
+        return 1
+    if not args.image:
+        print(
+            "Error: falta la imagen base. Ejemplo:\n"
+            '  python3 ./encryptpeg -e "clave" -m "mensaje" foto.jpg',
+            file=sys.stderr,
+        )
+        return 1
+    if args.offset is not None and not (0 <= args.offset <= 256):
+        print("Error: --offset debe estar entre 0 y 256.", file=sys.stderr)
+        return 1
+    if not os.path.isfile(args.image):
+        print(f"Error: no se encuentra la imagen '{args.image}'.", file=sys.stderr)
+        return 1
+
+    output_path = ensure_jpg_extension(args.output or "salida_encriptada.jpg")
+
+    try:
+        used_offset = save_image_with_message(
+            image_path=args.image,
+            message=args.message,
+            key=args.encrypt,
+            output_path=output_path,
+            offset=args.offset,
+        )
+    except Exception as e:
+        print(f"Error al encriptar: {e}", file=sys.stderr)
+        return 1
+
+    diagnostico = verify_saved_image(output_path)
+    if diagnostico["errores"]:
+        print(f"Aviso: la imagen se guardó pero hay problemas: {diagnostico['errores']}", file=sys.stderr)
+        return 1
+
+    print(f"Imagen encriptada guardada en: {output_path}")
+    print(f"Offset usado: {used_offset}")
+    return 0
+
+
+def run_decrypt(args: argparse.Namespace) -> int:
+    if not os.path.isfile(args.decrypt):
+        print(f"Error: no se encuentra la imagen '{args.decrypt}'.", file=sys.stderr)
+        return 1
+
+    try:
+        mensaje, clave, offset = decode_message_from_image(args.decrypt)
+    except Exception as e:
+        print(f"Error al desencriptar: {e}", file=sys.stderr)
+        return 1
+
+    print(mensaje)
+    return 0
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.encrypt and args.decrypt:
+        parser.error("No se puede usar --encrypt y --decrypt a la vez.")
+
+    if args.decrypt:
+        return run_decrypt(args)
+
+    if args.encrypt:
+        return run_encrypt(args)
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
