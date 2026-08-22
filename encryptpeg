@@ -14,8 +14,8 @@ import sys
 
 import cv2
 
-from steganography import save_image_with_message, decode_message_from_image
-from export import verify_saved_image
+from src.steganography import save_image_with_message, decode_message_from_image
+from src.export import verify_saved_image
 
 
 def build_parser() -> argparse.ArgumentParser:

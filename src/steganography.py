@@ -1,9 +1,9 @@
 from typing import List, Tuple
 import random
 import numpy as np
-from convert import load_and_split, pad_to_multiple_of_8, process_channel, merge_and_save, iter_blocks_8x8
-from dct import to_frequencies, from_frequencies
-from encrypt import xor_encryption, xor_decryption
+from .convert import load_and_split, pad_to_multiple_of_8, process_channel, merge_and_save, iter_blocks_8x8
+from .dct import to_frequencies, from_frequencies
+from .encrypt import xor_encryption, xor_decryption
 
 EMBED_ROW, EMBED_COL = 4, 4   # posición donde se guarda el bit en cada bloque
 
@@ -210,18 +210,7 @@ def save_image_with_message(
     output_path: str,
     offset: int = None
 ) -> int:
-    """
-    offset: nº de bits deseados para reservar a la clave (0-256). Si es
-    None, se elige uno aleatorio válido. Se resuelve una única vez y se usa
-    igual en los canales Cr y Cb para que ambos queden coherentes.
-
-    Devuelve el offset final realmente usado (puede diferir ligeramente del
-    solicitado: se redondea hacia arriba al múltiplo del tamaño de la clave).
-    """
-    from encrypt import xor_encryption
-
     ycrcb, Y, Cr, Cb = load_and_split(image_path)
-    h_orig, w_orig = Y.shape
 
     Y_pad  = pad_to_multiple_of_8(Y)
     Cr_pad = pad_to_multiple_of_8(Cr)
@@ -242,15 +231,10 @@ def save_image_with_message(
     Cb_freqs  = embed_message_in_channel(Cb_freqs, encrypted_bytes, key_bytes, used_offset)
     Cb_out    = reconstruct_channel(Cb_freqs, Cb_pad.shape)
 
-    Y_out  = Y_out[:h_orig, :w_orig]
-    Cr_out = Cr_out[:h_orig, :w_orig]
-    Cb_out = Cb_out[:h_orig, :w_orig]
-
     merge_and_save(Y_out, Cr_out, Cb_out, output_path)
     print(f"Imagen guardada en {output_path} (offset usado: {used_offset})")
 
     return used_offset
-
 
 def extract_all_blocks(channel: np.ndarray) -> List[List[List[float]]]:
     blocks = []
