@@ -2,12 +2,27 @@ import cv2
 import numpy as np
 from typing import List, Tuple
 
+def resize_max_side(image: np.ndarray, max_side: int = 1600) -> np.ndarray:
+    """Reescala la imagen para whatsapp"""
+    h, w = image.shape[:2]
+    if max(h, w) <= max_side:
+        return image
+
+    if h > w:
+        new_h = max_side
+        new_w = int(round(w * (max_side / h)))
+    else:
+        new_w = max_side
+        new_h = int(round(h * (max_side / w)))
+
+    return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
 def load_and_split(image_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     bgr = cv2.imread(image_path)
     if bgr is None:
         raise FileNotFoundError(f"No se encontró la imagen: {image_path}")
 
+    bgr = resize_max_side(bgr)
     ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
 
     Y, Cr, Cb = cv2.split(ycrcb)

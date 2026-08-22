@@ -188,10 +188,9 @@ def decode_message_from_image(
         raise ValueError("channel debe ser 'Cr' o 'Cb'")
 
     ycrcb, Y, Cr, Cb = load_and_split(image_path)
-    canal = Cr if channel == "Cr" else Cb
-
-    canal_pad = pad_to_multiple_of_8(canal)
-    blocks = extract_all_blocks(canal_pad)
+    
+    Y_pad = pad_to_multiple_of_8(Y)
+    blocks = extract_all_blocks(Y_pad)
     freqs = [to_frequencies(b) for b in blocks]
 
     encrypted_bytes, key_bytes, offset = extract_message_from_channel(freqs)
@@ -220,16 +219,14 @@ def save_image_with_message(
     used_offset = resolve_offset(key_bytes, offset)
 
     Y_out = process_channel(Y_pad, lambda b: from_frequencies(to_frequencies(b)))
+    
+    Y_blocks = extract_all_blocks(Y_pad)
+    Y_freqs = [to_frequencies(b) for b in Y_blocks]
+    Y_freqs = embed_message_in_channel(Y_freqs, encrypted_bytes, key_bytes, used_offset)
+    Y_out = reconstruct_channel(Y_freqs, Y_pad.shape)
 
-    Cr_blocks = extract_all_blocks(Cr_pad)
-    Cr_freqs  = [to_frequencies(b) for b in Cr_blocks]
-    Cr_freqs  = embed_message_in_channel(Cr_freqs, encrypted_bytes, key_bytes, used_offset)
-    Cr_out    = reconstruct_channel(Cr_freqs, Cr_pad.shape)
-
-    Cb_blocks = extract_all_blocks(Cb_pad)
-    Cb_freqs  = [to_frequencies(b) for b in Cb_blocks]
-    Cb_freqs  = embed_message_in_channel(Cb_freqs, encrypted_bytes, key_bytes, used_offset)
-    Cb_out    = reconstruct_channel(Cb_freqs, Cb_pad.shape)
+    Cb_out = Cb_pad
+    Cr_out = Cr_pad
 
     merge_and_save(Y_out, Cr_out, Cb_out, output_path)
     print(f"Imagen guardada en {output_path} (offset usado: {used_offset})")
